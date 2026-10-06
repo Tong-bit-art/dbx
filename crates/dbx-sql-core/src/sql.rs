@@ -221,6 +221,11 @@ impl SqlDialectProfile {
             return Self::sql_server();
         }
 
+        if matches!(db_type, DatabaseType::ClickHouse) {
+            // ClickHouse documents that C-style block comments nest.
+            return Self { supports_nested_block_comments: true, ..Self::default() };
+        }
+
         if Self::is_mysql_compatible_database(db_type) {
             return Self::mysql_compatible();
         }
@@ -577,6 +582,10 @@ impl SqlStatementSplitter {
                 self.buffer.push(ch);
                 if self.options.profile.supports_nested_block_comments && self.previous == Some('/') && ch == '*' {
                     self.block_comment_depth += 1;
+                    // A nested opener's asterisk must not pair with a following slash as a close.
+                    self.previous = None;
+                    i += 1;
+                    continue;
                 } else if self.previous == Some('*') && ch == '/' {
                     self.block_comment_depth -= 1;
                 }
@@ -2268,6 +2277,9 @@ impl SqlScanner {
         if self.block_comment_depth > 0 {
             if self.profile.supports_nested_block_comments && self.previous == Some('/') && ch == '*' {
                 self.block_comment_depth += 1;
+                // A nested opener's asterisk must not pair with a following slash as a close.
+                self.previous = None;
+                return;
             } else if self.previous == Some('*') && ch == '/' {
                 self.block_comment_depth -= 1;
             }
@@ -3179,6 +3191,10 @@ fn has_executable_sql_with_options(statement: &str, options: SqlParsingOptions) 
         if block_comment_depth > 0 {
             if options.profile.supports_nested_block_comments && previous == Some('/') && ch == '*' {
                 block_comment_depth += 1;
+                // A nested opener's asterisk must not pair with a following slash as a close.
+                previous = None;
+                i += 1;
+                continue;
             } else if previous == Some('*') && ch == '/' {
                 block_comment_depth -= 1;
             }
@@ -3624,6 +3640,25 @@ mod tests {
     fn sqlserver_nested_block_comments_keep_commented_out_statements_out() {
         let sql = "/* a\n/* b */ ;\nUPDATE prod.orders SET paid = 0;\n*/\nSELECT 1;";
         let statements = split_sql_statements_for_database(sql, DatabaseType::SqlServer);
+
+        assert!(!statements.iter().any(|statement| statement.starts_with("UPDATE")), "{statements:?}");
+        assert!(statements.iter().any(|statement| statement.contains("SELECT 1")), "{statements:?}");
+    }
+
+    #[test]
+    fn nested_opener_slash_asterisk_slash_does_not_close_the_comment() {
+        // The lexer consumes `/*` atomically, so the `/` right after a nested opener
+        // is literal text and must not pair with the preceding `*` to close it.
+        let sql = "/* /*/ */ SELECT 1;";
+        let statements = split_sql_statements_for_database(sql, DatabaseType::Postgres);
+
+        assert!(!statements.iter().any(|statement| statement.trim_start().starts_with("SELECT")), "{statements:?}");
+    }
+
+    #[test]
+    fn clickhouse_block_comments_nest() {
+        let sql = "/* a\n/* b */ ;\nUPDATE prod.orders SET paid = 0;\n*/\nSELECT 1;";
+        let statements = split_sql_statements_for_database(sql, DatabaseType::ClickHouse);
 
         assert!(!statements.iter().any(|statement| statement.starts_with("UPDATE")), "{statements:?}");
         assert!(statements.iter().any(|statement| statement.contains("SELECT 1")), "{statements:?}");
