@@ -1830,6 +1830,7 @@ class SqlCompletionProvider {
       const autoAliasTables = !!this.input.autoAliasTables && context.autoAliasTableCompletions && !context.tableCompletionTargetAliasUnsafe && supportsTableAliases(this.databaseType);
       const schemaQualification = normalizeSqlTableCompletionSchemaQualification(this.input.tableCompletionSchemaQualification);
       this.items.push(...buildForeignKeyRelatedTableItems(context, completionTables, this.input.foreignKeysByTable, this.dialect, autoAliasTables, this.databaseType, this.input.currentSchema, schemaQualification));
+      this.items.push(...buildReferencedTableItems(context, completionTables, this.dialect));
       this.items.push(...buildTableItems(context, completionTables, this.dialect, autoAliasTables, context.referencedTables, this.databaseType, this.input.currentSchema, schemaQualification));
       if (this.databaseType === "clickhouse") {
         this.items.push(...buildClickHouseFunctionItems(context.prefix, context.openingParenAfterCursor, "table", this.input.functionCompletionIncludeParams));
@@ -4205,6 +4206,40 @@ function resolveTableSchemaQualification(
   const schemaQualification = !!table.schema && (schemaQualificationMode === "always" || (schemaQualificationMode === "collision" && (oracleSchemaQualification || ambiguousTableName)));
   const defaultApplyName = schemaQualification ? `${quoteCompletionApplyIdentifier(table.schema!, dialect)}.${quoteCompletionApplyIdentifier(table.name, dialect)}` : quoteCompletionApplyIdentifier(table.name, dialect);
   return { ambiguousTableName, schemaQualification, defaultApplyName };
+}
+
+/**
+ * In-scope relations that are not in the catalog — `WITH` CTEs and resolved
+ * subquery aliases — never reached the table-name candidates, so a CTE could
+ * complete its columns but not its own name (#8381).
+ *
+ * The parser records columns for the references it resolved, which is what
+ * separates a real in-scope relation from the half-typed name the cursor
+ * currently sits in (that one has no columns and stays out of the list).
+ *
+ * In-scope relations outrank catalog matches: a CTE is what the statement
+ * actually selects from, while a catalog table is only a name that matched
+ * (the catalog path scores initials and subsequence matches up to 2400).
+ */
+function buildReferencedTableItems(context: SqlCompletionContext, completionTables: SqlCompletionTable[], dialect?: SqlCompletionApplyDialect): SqlCompletionItem[] {
+  const knownTables = new Set(completionTables.map((table) => normalizeIdentifierPart(table.name)));
+  const seen = new Set<string>();
+  const items: SqlCompletionItem[] = [];
+  for (const reference of context.referencedTables) {
+    if (!reference.columns || reference.columns.length === 0) continue;
+    if (!matchesPrefix(reference.name, context.prefix)) continue;
+    const key = normalizeIdentifierPart(reference.name);
+    if (!key || knownTables.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    items.push({
+      label: reference.name,
+      type: "table",
+      detail: reference.schema ? `${reference.schema}.${reference.name}` : undefined,
+      apply: quoteCompletionApplyIdentifier(reference.name, dialect),
+      boost: computeBoost(reference.name, context.prefix) + 5_000,
+    });
+  }
+  return items;
 }
 
 function buildTableItems(
