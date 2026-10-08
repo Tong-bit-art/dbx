@@ -1544,6 +1544,18 @@ describe("sqlCompletion scoped context classification", () => {
     expect(items.some((item) => item.type === "snippet" && item.apply === "tm ")).toBe(true);
   });
 
+  it("offers a star-projection CTE as a table candidate without a duplicate alias snippet", () => {
+    // `SELECT *` inside the CTE body leaves its extracted columns empty; the
+    // CTE itself must still complete as a table (#8381's most common shape).
+    const sql = "with tmp as(select * from test.t)\nselect * from tm";
+    const legacy = getSqlCompletionContext(sql, sql.length);
+    const semanticContext = sqlCompletionContextFromSemantic(buildSqlSemanticModel(sql, sql.length), legacy);
+    const items = buildSqlCompletionItemsFromContext(semanticContext, { tables: [], columnsByTable: new Map() });
+
+    expect(items.some((item) => item.type === "table" && item.label === "tmp")).toBe(true);
+    expect(items.some((item) => item.type === "snippet" && item.apply === "tmp ")).toBe(false);
+  });
+
   it("does not offer the half-typed relation as a table candidate", () => {
     const sql = "with tmp as(select id from test.t)\nselect * from tm";
     const legacy = getSqlCompletionContext(sql, sql.length);
