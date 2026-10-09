@@ -555,6 +555,14 @@ pub fn build_sorted_query_sql(options: SortedQuerySqlOptions) -> QuerySqlBuildRe
     } else {
         quote_table_identifier(options.database_type, &sort_alias)
     };
+    if options.database_type == Some(DatabaseType::SqlServer)
+        && find_top_level_trailing_order_by(statement).is_none()
+        && sql_server_ast_has_order_by(statement)
+    {
+        // 词法定位不到结尾 ORDER BY（`#` 临时表/反斜杠字符串）时无法把它从
+        // 派生表包装里剥掉，SQL Server 会拒绝包装后的语句。
+        return err("unsupported");
+    }
     let wrapped_statement = if options.database_type == Some(DatabaseType::SqlServer) {
         sql_server_statement_for_derived_table(statement)
     } else {
@@ -1579,16 +1587,20 @@ fn sql_server_count_sql(statement: &str) -> Option<String> {
     }
     let dialect = MsSqlDialect {};
     let mut statements = Parser::parse_sql(&dialect, statement).ok()?;
-    let derived_table_projection_safe = {
+    let (derived_table_projection_safe, ast_has_order_by) = {
         let [Statement::Query(query)] = statements.as_slice() else {
             return None;
         };
         let SetExpr::Select(select) = query.body.as_ref() else {
             return None;
         };
-        sql_server_derived_table_select_projection_safe(select)
+        (sql_server_derived_table_select_projection_safe(select), query.order_by.is_some())
     };
-    if derived_table_projection_safe {
+    // 词法扫描在 `#` 临时表、反斜杠字符串后会漏掉结尾 ORDER BY（见
+    // sql_server_ast_has_order_by）。定位不到就不能原样塞进派生表：SQL Server
+    // 拒绝派生表里的 ORDER BY。改走下面的 AST 重写分支，由它剥掉 ORDER BY。
+    let hidden_order_by = ast_has_order_by && find_top_level_trailing_order_by(statement).is_none();
+    if derived_table_projection_safe && !hidden_order_by {
         let alias = quote_table_identifier(Some(DatabaseType::SqlServer), "dbx_count");
         let wrapped_sql = sql_server_statement_for_derived_table(statement);
         return Some(derived_table_sql("SELECT COUNT(*) AS dbx_total_rows FROM", &wrapped_sql, &format!("{alias};")));
@@ -3376,6 +3388,27 @@ mod tests {
             });
 
             assert!(!result.ok, "must not rewrite {sql}");
+        }
+    }
+
+    // 词法扫描漏检的结尾 ORDER BY 不能原样塞进 COUNT 派生表（SQL Server 拒绝），
+    // 走 AST 重写分支剥离后再计数。
+    #[test]
+    fn sqlserver_count_strips_lexically_hidden_order_by() {
+        for (original, expected) in [
+            (
+                "SELECT * FROM t WHERE p = 'C:\\' ORDER BY id",
+                "SELECT COUNT(*) AS dbx_total_rows FROM t WHERE p = 'C:\\';",
+            ),
+            ("SELECT id FROM #t ORDER BY id", "SELECT COUNT(*) AS dbx_total_rows FROM #t;"),
+        ] {
+            let result = build_count_query_sql(CountQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+            });
+
+            assert!(result.ok, "must stay countable: {original}");
+            assert_eq!(result.sql.unwrap(), expected);
         }
     }
 
@@ -6092,6 +6125,24 @@ WHERE u.id = picked.id;
             result.sql.unwrap(),
             "SELECT * FROM (SELECT id, name FROM users) t([id], [name]) ORDER BY [name] ASC;"
         );
+    }
+
+    // 词法扫描漏检的结尾 ORDER BY 无法从排序包装里剥离，直接拒绝而不是生成非法 SQL。
+    #[test]
+    fn sqlserver_sort_rejects_lexically_hidden_order_by() {
+        for original in ["SELECT * FROM t WHERE p = 'C:\\' ORDER BY id", "SELECT id FROM #t ORDER BY id"] {
+            let result = build_sorted_query_sql(SortedQuerySqlOptions {
+                original_sql: original.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+                result_columns: vec!["id".to_string()],
+                column_index: 0,
+                column: "id".to_string(),
+                direction: QuerySortDirection::Asc,
+            });
+
+            assert!(!result.ok, "must refuse the unsafe wrap: {original}");
+            assert_eq!(result.reason.as_deref(), Some("unsupported"), "{original}");
+        }
     }
 
     #[test]
