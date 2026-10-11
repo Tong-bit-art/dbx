@@ -1424,13 +1424,8 @@ fn oracle_alternative_quote_len(ch: char, chars: &std::iter::Peekable<std::str::
         Some('\'') => length += 1,
         _ => return None,
     }
-    let opener = match probe.next() {
-        Some(opener) => {
-            length += 1;
-            opener
-        }
-        None => return None,
-    };
+    let opener = probe.next()?;
+    length += 1;
     // A whitespace opener means `q '...'` — an identifier then an ordinary
     // string, not an alternative-quoted literal.
     if opener.is_whitespace() {
@@ -1444,15 +1439,11 @@ fn oracle_alternative_quote_len(ch: char, chars: &std::iter::Peekable<std::str::
         other => other,
     };
     loop {
-        match probe.next() {
-            Some(scan) => {
-                length += 1;
-                if scan == closer && probe.peek() == Some(&'\'') {
-                    probe.next();
-                    return Some(length + 1);
-                }
-            }
-            None => return None,
+        let scan = probe.next()?;
+        length += 1;
+        if scan == closer && probe.peek() == Some(&'\'') {
+            probe.next();
+            return Some(length + 1);
         }
     }
 }
