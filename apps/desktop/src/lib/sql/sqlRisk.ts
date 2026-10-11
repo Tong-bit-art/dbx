@@ -65,7 +65,7 @@ export function usesMysqlLexerRules(dialect?: DatabaseType | string): boolean {
  */
 const POSTGRES_ESCAPE_STRING_DATABASE_TYPES = new Set<string>(["postgres", "opengauss", "gaussdb", "vastbase", "kingbase", "highgo", "uxdb", "kwdb"]);
 
-function usesPostgresEscapeStrings(dialect?: DatabaseType | string): boolean {
+export function usesPostgresEscapeStrings(dialect?: DatabaseType | string): boolean {
   return typeof dialect === "string" && POSTGRES_ESCAPE_STRING_DATABASE_TYPES.has(dialect.trim().toLowerCase());
 }
 
@@ -74,7 +74,7 @@ function usesPostgresEscapeStrings(dialect?: DatabaseType | string): boolean {
  * so `DATE'2020-01-01'` and `x$e'...'` stay ordinary strings. Mirrors
  * `ends_with_escape_string_prefix` in `crates/dbx-core/src/safety/production_safety.rs`.
  */
-function endsWithEscapeStringPrefix(sql: string, quoteIndex: number): boolean {
+export function endsWithEscapeStringPrefix(sql: string, quoteIndex: number): boolean {
   const introducer = sql[quoteIndex - 1];
   if (introducer !== "E" && introducer !== "e") return false;
   const before = sql[quoteIndex - 2];
