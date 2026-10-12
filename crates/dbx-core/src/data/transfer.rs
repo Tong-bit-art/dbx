@@ -4320,8 +4320,10 @@ fn generate_create_table_ddl_with_column_quoting(
     // one column, which the explicit-only rule keeps true for composite primary
     // keys as well.
     //
-    // MySQL-family targets keep the inline clause below. Two target families stay
-    // on the plain path:
+    // MySQL-family targets keep the inline clause below. Targets that stay on the
+    // plain path:
+    // - The profile-level MySQL family beyond the transfer's own list (Databend,
+    //   Gbase, ManticoreSearch): they reject the `AUTO_INCREMENT` spelling.
     // - Postgres family (`PostgresSequence`): the target needs a created sequence
     //   plus `ALTER TABLE ... SET DEFAULT`, which this generator does not emit;
     //   those transfers keep their own sequence handling.
@@ -4334,7 +4336,14 @@ fn generate_create_table_ddl_with_column_quoting(
             target_db,
             DatabaseType::Sqlite | DatabaseType::Rqlite | DatabaseType::Turso | DatabaseType::CloudflareD1
         )
-        && matches!(target_profile.auto_inc, AutoIncSyntax::Suffix(_) | AutoIncSyntax::ReplaceTypeWith(_));
+        && match target_profile.auto_inc {
+            // `profile_for` puts Databend/Gbase/ManticoreSearch in the MySQL family
+            // too, but their grammars reject MySQL's `AUTO_INCREMENT` spelling; only
+            // the transfer's own MySQL-family targets above keep it.
+            AutoIncSyntax::Suffix(suffix) => suffix != " AUTO_INCREMENT",
+            AutoIncSyntax::ReplaceTypeWith(_) => true,
+            _ => false,
+        };
 
     let mut col_lines = Vec::with_capacity(columns.len());
     for c in columns {
@@ -21224,6 +21233,28 @@ SELECT 1 FROM dual"#
             generate_create_table_ddl(&cols, "users", "", "", &DatabaseType::Sqlite, &DatabaseType::Mysql, None, None);
         assert!(!sqlite.contains("AUTOINCREMENT"), "sqlite: {sqlite}");
         assert!(!sqlite.contains("AUTO_INCREMENT"), "sqlite: {sqlite}");
+    }
+
+    #[test]
+    fn transfer_create_table_keeps_databend_gbase_and_manticore_auto_increment_outs() {
+        // Databend spells auto-increment `AUTOINCREMENT`/`IDENTITY` and rejects
+        // MySQL's `AUTO_INCREMENT`; Gbase and ManticoreSearch stay on the plain
+        // path until their transfer DDL is verified. Only the transfer's own
+        // MySQL-family targets keep the clause.
+        let cols = vec![db::ColumnInfo {
+            is_primary_key: true,
+            is_nullable: false,
+            extra: Some("auto_increment".to_string()),
+            ..test_column("id", "int")
+        }];
+
+        for target in [DatabaseType::Databend, DatabaseType::Gbase, DatabaseType::ManticoreSearch] {
+            let ddl =
+                generate_create_table_ddl(&cols, "users", "source", "app", &target, &DatabaseType::Mysql, None, None);
+            assert!(!ddl.contains("AUTO_INCREMENT"), "{target:?}: {ddl}");
+            assert!(!ddl.contains("AUTOINCREMENT"), "{target:?}: {ddl}");
+            assert!(!ddl.contains("IDENTITY"), "{target:?}: {ddl}");
+        }
     }
 
     #[test]
