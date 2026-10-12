@@ -185,6 +185,18 @@ const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<Databa
   "oceanbase-oracle": {
     syntheticKey: "oracle-rowid",
   },
+  iris: {
+    // Caché/IRIS data-grid saves already emit INSERT/UPDATE/DELETE for ordinary
+    // tables (see `prepare_data_grid_save`), but the engine keeps the default
+    // PK-gated rules for existing rows and only restores the Add Row entry point.
+    tableData: {
+      insert: true,
+      updateRequiresPrimaryKey: true,
+      deleteRequiresPrimaryKey: true,
+      requiresTransactionalTableForExistingRows: false,
+      transaction: true,
+    },
+  },
   trino: {
     tableData: {
       insert: true,

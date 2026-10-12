@@ -80,6 +80,16 @@ describe("tableEditing", () => {
     expect(canInsertTableRows("xugu")).toBe(true);
   });
 
+  it("offers Add Row for Caché/IRIS tables while keeping existing-row edits key-gated", () => {
+    expect(canInsertTableRows("iris")).toBe(true);
+    expect(isTableDataEditable("iris", [], "TABLE")).toBe(true);
+    expect(isTableDataEditable("iris", [], "VIEW")).toBe(false);
+    expect(canEditExistingTableRows("iris", false, [])).toBe(false);
+    expect(canEditExistingTableRows("iris", false, ["ID"])).toBe(true);
+    expect(canUseKeylessRowPredicate("iris", [])).toBe(false);
+    expect(supportsDataGridTransaction("iris")).toBe(true);
+  });
+
   it("includes Xugu ROWID while cold table metadata has no declared primary keys", () => {
     expect(shouldIncludeSyntheticRowId("xugu", [], "TABLE")).toBe(true);
     expect(shouldIncludeSyntheticRowId("xugu", [], "PARTITIONED TABLE")).toBe(true);
