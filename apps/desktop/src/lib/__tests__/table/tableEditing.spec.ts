@@ -164,6 +164,16 @@ describe("tableEditing", () => {
     expect(canEditExistingTableRows("clickhouse", undefined, [])).toBe(false);
   });
 
+  it("saves Databend grid edits through the auto-commit batch path", () => {
+    // The Databend JDBC driver reports no transaction support and the agent refuses a
+    // one-shot transactional batch ("Transactions are not supported by this JDBC
+    // driver", #12003), so the grid must not request one.
+    expect(supportsDataGridTransaction("databend")).toBe(false);
+    expect(canInsertTableRows("databend")).toBe(true);
+    expect(canEditExistingTableRows("databend", undefined, [])).toBe(true);
+    expect(canUseKeylessRowPredicate("databend", [])).toBe(true);
+  });
+
   it("uses tbname only when editing TDengine stable rows", () => {
     const columns = [column("ts", true), column("seq", true), column("voltage")];
     expect(editablePrimaryKeys("tdengine", columns, "STABLE")).toEqual([DBX_TDENGINE_TBNAME_COLUMN, "ts", "seq"]);

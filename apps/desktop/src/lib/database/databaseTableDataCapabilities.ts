@@ -163,6 +163,20 @@ const DATABASE_CAPABILITY_OVERRIDES: Partial<Record<DatabaseType, Partial<Databa
       transaction: false,
     },
   },
+  databend: {
+    // Databend's JDBC driver reports no transaction support
+    // (`supportsTransactions() == false`), and the agent refuses a one-shot
+    // transactional batch outright with "Transactions are not supported by this
+    // JDBC driver" (#12003). Save grid edits through the auto-commit batch path.
+    tableData: {
+      insert: true,
+      updateRequiresPrimaryKey: false,
+      deleteRequiresPrimaryKey: false,
+      keylessRowPredicate: true,
+      requiresTransactionalTableForExistingRows: false,
+      transaction: false,
+    },
+  },
   neo4j: {
     syntheticKey: "neo4j-element-id",
   },
