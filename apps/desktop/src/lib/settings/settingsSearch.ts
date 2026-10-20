@@ -537,6 +537,7 @@ export const SETTINGS_SEARCH_DEFINITIONS: readonly SettingsSearchDefinition[] = 
       "connection.httpTunnelUrl",
       "connection.httpTunnelToken",
       "connection.httpTunnelConnectTimeout",
+      "connection.httpTunnelProtocol",
     ],
   },
   { id: "shortcuts", category: "shortcuts", titleKey: "settings.shortcutsTab", targetId: "shortcuts" },
