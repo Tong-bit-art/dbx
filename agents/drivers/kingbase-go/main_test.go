@@ -3497,6 +3497,58 @@ func TestMySQLCompatViewAndMaterializedViewSourcesUseSeparateCatalogs(t *testing
 	}
 }
 
+func TestMySQLCompatViewSourceFallsBackWhenInformationSchemaHidesDefinition(t *testing.T) {
+	state := &metadataDriverState{query: func(query string) (driver.Rows, error) {
+		switch {
+		case strings.Contains(query, "information_schema.views"):
+			// Custom Kingbase roles see NULL here (#13002).
+			return &valueRows{columns: []string{"view_definition"}, rows: [][]driver.Value{{nil}}}, nil
+		case strings.Contains(query, "sys_get_viewdef(") || strings.Contains(query, "pg_get_viewdef("):
+			return &valueRows{columns: []string{"source"}, rows: [][]driver.Value{{"SELECT 1"}}}, nil
+		default:
+			return nil, errors.New("unexpected query: " + query)
+		}
+	}}
+	server := newServer()
+	server.db = openMetadataDB(t, state)
+	server.mode.mysqlCompat = true
+
+	view, err := server.getObjectSource("public", "hg_v", "VIEW")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view["source"] != "SELECT 1" {
+		t.Fatalf("unexpected view source: %#v", view)
+	}
+	if queries := state.snapshotQueries(); len(queries) != 2 || !strings.Contains(queries[1], "sys_get_viewdef(") {
+		t.Fatalf("expected a catalog definition probe after the hidden information_schema value: %v", queries)
+	}
+}
+
+func TestMySQLCompatViewSourceStaysEmptyWhenEveryProbeIsNull(t *testing.T) {
+	state := &metadataDriverState{query: func(query string) (driver.Rows, error) {
+		switch {
+		case strings.Contains(query, "information_schema.views"):
+			return &valueRows{columns: []string{"view_definition"}, rows: [][]driver.Value{{nil}}}, nil
+		case strings.Contains(query, "sys_get_viewdef(") || strings.Contains(query, "pg_get_viewdef("):
+			return &valueRows{columns: []string{"source"}, rows: [][]driver.Value{{nil}}}, nil
+		default:
+			return nil, errors.New("unexpected query: " + query)
+		}
+	}}
+	server := newServer()
+	server.db = openMetadataDB(t, state)
+	server.mode.mysqlCompat = true
+
+	view, err := server.getObjectSource("public", "hidden_v", "VIEW")
+	if err != nil {
+		t.Fatalf("hidden definitions must not surface as scan errors: %v", err)
+	}
+	if view["source"] != "" {
+		t.Fatalf("expected an empty source, got %#v", view["source"])
+	}
+}
+
 func TestMaterializedViewSourceUsesPostgresCatalogDirectly(t *testing.T) {
 	state := &metadataDriverState{query: func(query string) (driver.Rows, error) {
 		if !strings.Contains(query, "SELECT pg_get_viewdef(c.oid)") ||

@@ -2788,23 +2788,19 @@ func (s *server) getObjectSourceForRelation(schema, name, objectType, relationNa
 	kind := strings.ToUpper(objectType)
 	if kind == "VIEW" {
 		if s.mode.mysqlCompat {
-			err = s.requireDBQueryRow("SELECT view_definition FROM information_schema.views WHERE table_schema = "+quoteLiteral(effective)+" AND table_name = "+quoteLiteral(name), &source)
+			var definition sql.NullString
+			err = s.requireDBQueryRow("SELECT view_definition FROM information_schema.views WHERE table_schema = "+quoteLiteral(effective)+" AND table_name = "+quoteLiteral(name), &definition)
+			if err == nil {
+				if definition.Valid && strings.TrimSpace(definition.String) != "" {
+					source = definition.String
+				} else {
+					// `view_definition` is NULL for roles without catalog privileges
+					// (custom Kingbase users, #13002); read the body from the catalog.
+					source, err = s.viewSourceFromCatalog(effective, name)
+				}
+			}
 		} else {
-			catalog, prefix, function := "sys_catalog", "sys", "sys_get_viewdef"
-			if s.mode.postgresCatalog {
-				catalog, prefix, function = "pg_catalog", "pg", "pg_get_viewdef"
-			} else if s.usePgViewDefinition {
-				function = "pg_get_viewdef"
-			}
-			querySource := func(definitionFunction string) error {
-				query := fmt.Sprintf("SELECT %s(c.oid) FROM %s.%s_class c JOIN %s.%s_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s AND c.relname=%s LIMIT 1", definitionFunction, catalog, prefix, catalog, prefix, quoteLiteral(effective), quoteLiteral(name))
-				return s.requireDBQueryRow(query, &source)
-			}
-			err = querySource(function)
-			if err != nil && function == "sys_get_viewdef" && isUndefinedFunction(err, function) {
-				s.usePgViewDefinition = true
-				err = querySource("pg_get_viewdef")
-			}
+			source, err = s.viewSourceFromCatalog(effective, name)
 		}
 	} else if kind == "MATERIALIZED_VIEW" {
 		source, err = s.getMaterializedViewSource(effective, name)
@@ -2861,6 +2857,52 @@ func (s *server) getObjectSourceForRelation(schema, name, objectType, relationNa
 		result["editable"] = false
 	}
 	return result, nil
+}
+
+// viewSourceFromCatalog reads a view body through the sys/pg catalog definition
+// function. MySQL-compatible instances return NULL from
+// information_schema.views.view_definition for roles without catalog privileges
+// (custom Kingbase users, #13002), while the catalog function still exposes the
+// body to any role that can access the view. NULL/blank definitions surface as
+// sql.ErrNoRows, matching the materialized-view probe.
+func (s *server) viewSourceFromCatalog(schema, name string) (string, error) {
+	catalog, prefix, function := "sys_catalog", "sys", "sys_get_viewdef"
+	if s.mode.postgresCatalog {
+		catalog, prefix, function = "pg_catalog", "pg", "pg_get_viewdef"
+	} else if s.usePgViewDefinition {
+		function = "pg_get_viewdef"
+	}
+	querySource := func(definitionFunction string) (string, error) {
+		query := fmt.Sprintf("SELECT %s(c.oid) FROM %s.%s_class c JOIN %s.%s_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s AND c.relname=%s LIMIT 1", definitionFunction, catalog, prefix, catalog, prefix, quoteLiteral(schema), quoteLiteral(name))
+		var source sql.NullString
+		if err := s.requireDBQueryRow(query, &source); err != nil {
+			return "", err
+		}
+		if !source.Valid || strings.TrimSpace(source.String) == "" {
+			return "", sql.ErrNoRows
+		}
+		return source.String, nil
+	}
+
+	source, err := querySource(function)
+	if err == nil {
+		return source, nil
+	}
+	if function == "sys_get_viewdef" {
+		if isUndefinedFunction(err, function) {
+			s.usePgViewDefinition = true
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		source, err = querySource("pg_get_viewdef")
+		if err == nil {
+			return source, nil
+		}
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.ErrNoRows
+	}
+	return "", err
 }
 
 func (s *server) getMaterializedViewSource(schema, name string) (string, error) {
